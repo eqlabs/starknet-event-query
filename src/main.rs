@@ -46,17 +46,25 @@ impl FilterSeed {
     pub fn from_stem(stem: &str) -> eyre::Result<Self> {
         let ret = match stem.find('+') {
             Some(pos) => {
-                let from_block =
-                    str::parse::<u64>(&stem[..pos]).map_err(|_| anyhow!("from block not a number"))?;
+                let from_block = str::parse::<u64>(&stem[..pos])
+                    .map_err(|_| anyhow!("from block not a number"))?;
                 let (block_count, with_name) = Self::parse_tail(&stem[pos + 1..])?;
                 let to_block = from_block
                     .checked_add(block_count)
                     .ok_or_else(|| anyhow!("adding block count overflows"))?;
-                Self { from_block, to_block, with_name }
+                Self {
+                    from_block,
+                    to_block,
+                    with_name,
+                }
             }
             None => {
                 let (from_block, with_name) = Self::parse_tail(stem)?;
-                Self { from_block, to_block: from_block, with_name }
+                Self {
+                    from_block,
+                    to_block: from_block,
+                    with_name,
+                }
             }
         };
         Ok(ret)
@@ -75,18 +83,17 @@ impl FilterSeed {
             None
         }
     }
-           
+
     fn parse_tail(tail: &str) -> eyre::Result<(u64, Option<String>)> {
         let pair = match tail.find('w') {
             Some(pos) => {
-                let n =
-                    str::parse::<u64>(&tail[..pos]).map_err(|_| anyhow!("stem tail doesn't start with a number"))?;
+                let n = str::parse::<u64>(&tail[..pos])
+                    .map_err(|_| anyhow!("stem tail doesn't start with a number"))?;
                 let s = tail[pos + 1..].to_string();
                 (n, Some(s))
             }
             None => {
-                let n =
-                    str::parse::<u64>(tail).map_err(|_| anyhow!("stem tail not a number"))?;
+                let n = str::parse::<u64>(tail).map_err(|_| anyhow!("stem tail not a number"))?;
                 (n, None)
             }
         };
@@ -108,8 +115,7 @@ async fn check_fixture(provider: &impl Provider, fixture: PathBuf) -> eyre::Resu
             .ok_or_else(|| anyhow!("fixture without path: {:?}", fixture))?;
         let filter_path = fixture_dir.join(basename);
         let contents = fs::read_to_string(filter_path)?;
-        let filter_map: HashMap<String, serde_json::Value> =
-            serde_json::from_str(&contents)?;
+        let filter_map: HashMap<String, serde_json::Value> = serde_json::from_str(&contents)?;
         if let serde_json::Value::String(ref addr) = filter_map["address"] {
             Some(addr.clone())
         } else {
@@ -160,11 +166,7 @@ async fn check_fixture(provider: &impl Provider, fixture: PathBuf) -> eyre::Resu
         }
     }
 
-    tracing::debug!(
-        "retrieved {} events in {} pages",
-        actual_count,
-        page_count
-    );
+    tracing::debug!("retrieved {} events in {} pages", actual_count, page_count);
 
     destination.seek(SeekFrom::Start(0))?;
     let actual_reader = BufReader::new(destination);

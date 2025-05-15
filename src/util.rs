@@ -30,8 +30,7 @@ pub fn start_logger(default_level: LevelFilter) {
 }
 
 pub fn parse_event(raw_string: &str) -> eyre::Result<serde_json::Value> {
-    let event_map: HashMap<String, serde_json::Value> =
-        serde_json::from_str(raw_string)?;
+    let event_map: HashMap<String, serde_json::Value> = serde_json::from_str(raw_string)?;
     let s = serde_json::to_string(&event_map)?;
     let v: serde_json::Value = serde_json::from_str(&s)?;
     Ok(v)
