@@ -134,12 +134,7 @@ async fn check_fixture(provider: &impl Provider, fixture: PathBuf) -> eyre::Resu
 
     let address = match raw_address {
         Some(s) => {
-            let tail = s.strip_prefix("0x").unwrap_or(&s);
-            let addr = format!("{:0>64}", tail);
-            let buf = hex::decode(addr)?;
-            let slice = buf.as_slice();
-            let arr: [u8; 32] = slice.try_into()?;
-            Some(Felt::from_bytes_be(&arr))
+            Some(Felt::from_hex(&s)?)
         }
         None => None,
     };

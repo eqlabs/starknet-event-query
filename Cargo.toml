@@ -7,7 +7,6 @@ edition = "2024"
 clap = { version = "4.5.37", features = ["derive"] }
 eyre = "0.6.12"
 glob = "0.3.2"
-hex = "0.4.3"
 pretty_assertions_sorted = "1.2.3"
 regex = "1.11.1"
 serde_json = "1.0.140"
