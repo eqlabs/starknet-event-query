@@ -133,9 +133,7 @@ async fn check_fixture(provider: &impl Provider, fixture: PathBuf) -> eyre::Resu
     };
 
     let address = match raw_address {
-        Some(s) => {
-            Some(Felt::from_hex(&s)?)
-        }
+        Some(s) => Some(Felt::from_hex(&s)?),
         None => None,
     };
 
