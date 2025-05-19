@@ -16,6 +16,13 @@ use starknet_event_query::util::{parse_event, start_logger};
 pub struct Cli {
     #[arg(
         long,
+        short = 'u',
+        long_help = "Filter for keys in any order",
+        default_value = "false"
+    )]
+    pub unordered: bool,
+    #[arg(
+        long,
         value_name = "fixtures",
         long_help = "Path to fixture directory",
         default_value = "ground"
@@ -45,7 +52,24 @@ fn cond_refract(cli: &Cli, unfiltered_rx: &Regex, fixture: PathBuf) -> eyre::Res
         };
 
         if !keys.is_empty() {
-            known_keys.insert(keys.clone());
+            let canon_keys = if !cli.unordered {
+                keys.clone()
+            } else {
+                let mut str_keys = Vec::new();
+                for v in keys {
+                    if let serde_json::Value::String(k) = v {
+                        str_keys.push(k);
+                    } else {
+                        return Err(anyhow!("unexpected key type"));
+                    }
+                }
+                str_keys.sort();
+                str_keys
+                    .iter()
+                    .map(|s| serde_json::Value::String(s.to_string()))
+                    .collect()
+            };
+            known_keys.insert(canon_keys);
             events.push(event);
         }
     }
@@ -54,8 +78,11 @@ fn cond_refract(cli: &Cli, unfiltered_rx: &Regex, fixture: PathBuf) -> eyre::Res
         let filter_no = index + 1;
         let filter_name = format!("{}f{}.json", stem, filter_no);
         let filter_path = cli.fixture_dir.join(filter_name);
-        let filter_keys: Vec<Vec<serde_json::Value>> =
-            keys.iter().map(|k| vec![k.clone()]).collect();
+        let filter_keys: Vec<Vec<serde_json::Value>> = if !cli.unordered {
+            keys.iter().map(|k| vec![k.clone()]).collect()
+        } else {
+            (0..keys.len()).map(|_| keys.clone()).collect()
+        };
         let filter_json = json!({
             "keys": filter_keys
         });
@@ -69,7 +96,14 @@ fn cond_refract(cli: &Cli, unfiltered_rx: &Regex, fixture: PathBuf) -> eyre::Res
                 return Err(anyhow!("unexpected event keys type"));
             };
 
-            if event_keys.starts_with(&keys) {
+            let accept = if !cli.unordered {
+                event_keys.starts_with(&keys)
+            } else {
+                let event_key_set: HashSet<serde_json::Value> =
+                    event_keys.iter().cloned().collect();
+                keys.iter().all(|k| event_key_set.contains(k))
+            };
+            if accept {
                 writeln!(&mut output_file, "{}", event)?;
             }
         }
