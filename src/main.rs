@@ -1,19 +1,22 @@
 use clap::Parser;
 use eyre::anyhow;
 use pretty_assertions_sorted::assert_eq;
+use serde_json::json;
 use starknet::{
-    core::types::{BlockId, EventFilter},
+    core::types::{BlockId, ConfirmedBlockId, EventFilter},
     providers::{
         Provider, Url,
         jsonrpc::{HttpTransport, JsonRpcClient},
     },
 };
+use starknet_tokio_tungstenite::{EventSubscriptionOptions, EventsUpdate, TungsteniteStream};
 use tracing_subscriber::filter::LevelFilter;
 
 use std::collections::HashMap;
 use std::fs;
 use std::io::{BufRead, BufReader, Seek, SeekFrom, Write};
 use std::path::PathBuf;
+use std::time::Duration;
 
 use starknet_event_query::{
     config::Cli,
@@ -21,7 +24,21 @@ use starknet_event_query::{
     util::{parse_event, start_logger},
 };
 
-async fn check_fixture(provider: &impl Provider, fixture: PathBuf) -> eyre::Result<()> {
+fn check_received_data(fixture: PathBuf, mut destination: fs::File) -> eyre::Result<()> {
+    destination.seek(SeekFrom::Start(0))?;
+    let actual_reader = BufReader::new(destination);
+    let source = fs::File::open(fixture)?;
+    let expected_reader = BufReader::new(source);
+    for (actual_line, expected_line) in actual_reader.lines().zip(expected_reader.lines()) {
+        let actual_event = parse_event(&actual_line?)?;
+        let expected_event = parse_event(&expected_line?)?;
+        assert_eq!(actual_event, expected_event);
+    }
+
+    Ok(())
+}
+
+async fn check_rpc_fixture(provider: &impl Provider, fixture: PathBuf) -> eyre::Result<()> {
     let filter_seed = FilterSeed::load(&fixture)?;
     let (address, keys) = filter_seed.get_filter_address_and_keys(&fixture)?;
     let filter = EventFilter {
@@ -55,15 +72,69 @@ async fn check_fixture(provider: &impl Provider, fixture: PathBuf) -> eyre::Resu
     }
 
     tracing::debug!("retrieved {} events in {} pages", actual_count, page_count);
+    check_received_data(fixture, destination)
+}
 
-    destination.seek(SeekFrom::Start(0))?;
-    let actual_reader = BufReader::new(destination);
-    let source = fs::File::open(fixture)?;
-    let expected_reader = BufReader::new(source);
-    for (actual_line, expected_line) in actual_reader.lines().zip(expected_reader.lines()) {
-        let actual_event = parse_event(&actual_line?)?;
-        let expected_event = parse_event(&expected_line?)?;
-        assert_eq!(actual_event, expected_event);
+async fn check_ws_fixture(ws_url: &Url, fixture: PathBuf) -> eyre::Result<()> {
+    let filter_seed = FilterSeed::load(&fixture)?;
+    let (address, keys) = filter_seed.get_filter_address_and_keys(&fixture)?;
+    let stream = TungsteniteStream::connect(ws_url, Duration::from_secs(5))
+        .await
+        .expect("WebSocket connection failed");
+    let mut options = EventSubscriptionOptions::new().with_block_id(ConfirmedBlockId::Number(filter_seed.from_block));
+    options.from_address = address;
+    options.keys = keys;
+    let mut subscription = stream.subscribe_events(options).await.unwrap();
+    let mut destination = tempfile::tempfile()?;
+    let mut actual_count = 0;
+    loop {
+        match subscription.recv().await {
+            Ok(EventsUpdate::Event(event)) => {
+                if let Some(block_number) = event.block_number {
+                    if block_number > filter_seed.to_block {
+                        break;
+                    }
+
+                    let event_json = json!({
+                        "block_number": block_number,
+                        "data": event.data,
+                        "from_address": event.from_address,
+                        "keys": event.keys,
+                        "transaction_hash": event.transaction_hash,
+                    });
+                    writeln!(&mut destination, "{}", event_json)?;
+                    actual_count += 1;
+                } else {
+                    return Err(anyhow!("got event w/o block number"));
+                }
+            }
+            Ok(EventsUpdate::Reorg(reorg)) => {
+                // we only test stable historical data
+                return Err(anyhow!("encountered reorg {} -> {}", reorg.starting_block_number, reorg.ending_block_number));
+            }
+            Err(err) => {
+                return Err(err.into());
+            }
+        }
+    }
+
+    subscription.unsubscribe().await?;
+    tracing::debug!("retrieved {} events", actual_count);
+    check_received_data(fixture, destination)
+}
+
+async fn run_rpc(rpc_url: Url, mask_path_str: &str) -> eyre::Result<()> {
+    let provider = JsonRpcClient::new(HttpTransport::new(rpc_url));
+    for entry in glob::glob(mask_path_str)? {
+        check_rpc_fixture(&provider, entry?).await?;
+    }
+
+    Ok(())
+}
+
+async fn run_ws(ws_url: Url, mask_path_str: &str) -> eyre::Result<()> {
+    for entry in glob::glob(mask_path_str)? {
+        check_ws_fixture(&ws_url, entry?).await?;
     }
 
     Ok(())
@@ -74,15 +145,15 @@ async fn main() -> eyre::Result<()> {
     start_logger(LevelFilter::INFO);
 
     let cli = Cli::parse();
-    let rpc_url: Url = cli.pathfinder_rpc_url.parse()?;
-    let provider = JsonRpcClient::new(HttpTransport::new(rpc_url));
     let mask_path = cli.fixture_dir.join("*.jsonl");
     let path_str = mask_path
         .to_str()
         .ok_or_else(|| anyhow!("invalid fixture dir: {:?}", cli.fixture_dir))?;
-    for entry in glob::glob(path_str)? {
-        check_fixture(&provider, entry?).await?;
+    if !cli.subscribe {
+        let rpc_url: Url = cli.pathfinder_rpc_url.parse()?;
+        run_rpc(rpc_url, path_str).await
+    } else {
+        let ws_url: Url = cli.pathfinder_ws_url.parse()?;
+        run_ws(ws_url, path_str).await
     }
-
-    Ok(())
 }

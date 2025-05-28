@@ -22,6 +22,7 @@ impl FilterSeed {
         Self::from_stem(stem)
     }
 
+    #[allow(clippy::type_complexity)]
     pub fn get_filter_address_and_keys(
         &self,
         fixture: &Path,

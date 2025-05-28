@@ -11,6 +11,7 @@ pretty_assertions_sorted = "1.2.3"
 regex = "1.11.1"
 serde_json = "1.0.140"
 starknet = "0.15.1"
+starknet-tokio-tungstenite = "0.1.0"
 tempfile = "3.19.1"
 time = { version = "0.3.41", features = ["parsing"] }
 tokio = { version = "1.44.2", features = ["full"] }

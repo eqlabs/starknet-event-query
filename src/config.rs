@@ -14,9 +14,23 @@ pub struct Cli {
     pub pathfinder_rpc_url: String,
     #[arg(
         long,
+        value_name = "url",
+        long_help = "Server websocket URL",
+        default_value = "ws://localhost:9545/rpc/v0_8"
+    )]
+    pub pathfinder_ws_url: String,
+    #[arg(
+        long,
         value_name = "fixtures",
         long_help = "Path to fixture directory",
         default_value = "ground"
     )]
     pub fixture_dir: PathBuf,
+    #[arg(
+        long,
+        short = 's',
+        long_help = "Subscribe mode",
+        default_value = "false"
+    )]
+    pub subscribe: bool,
 }
