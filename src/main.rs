@@ -29,7 +29,9 @@ fn check_received_data(fixture: PathBuf, mut destination: fs::File) -> eyre::Res
     let actual_reader = BufReader::new(destination);
     let source = fs::File::open(fixture)?;
     let expected_reader = BufReader::new(source);
-    for (actual_line, expected_line) in actual_reader.lines().zip(expected_reader.lines()) {
+    for (actual_line, expected_line) in
+        itertools::zip_eq(actual_reader.lines(), expected_reader.lines())
+    {
         let actual_event = parse_event(&actual_line?)?;
         let expected_event = parse_event(&expected_line?)?;
         assert_eq!(actual_event, expected_event);
@@ -81,7 +83,8 @@ async fn check_ws_fixture(ws_url: &Url, fixture: PathBuf) -> eyre::Result<()> {
     let stream = TungsteniteStream::connect(ws_url, Duration::from_secs(5))
         .await
         .expect("WebSocket connection failed");
-    let mut options = EventSubscriptionOptions::new().with_block_id(ConfirmedBlockId::Number(filter_seed.from_block));
+    let mut options = EventSubscriptionOptions::new()
+        .with_block_id(ConfirmedBlockId::Number(filter_seed.from_block));
     options.from_address = address;
     options.keys = keys;
     let mut subscription = stream.subscribe_events(options).await.unwrap();
@@ -110,7 +113,11 @@ async fn check_ws_fixture(ws_url: &Url, fixture: PathBuf) -> eyre::Result<()> {
             }
             Ok(EventsUpdate::Reorg(reorg)) => {
                 // we only test stable historical data
-                return Err(anyhow!("encountered reorg {} -> {}", reorg.starting_block_number, reorg.ending_block_number));
+                return Err(anyhow!(
+                    "encountered reorg {} -> {}",
+                    reorg.starting_block_number,
+                    reorg.ending_block_number
+                ));
             }
             Err(err) => {
                 return Err(err.into());
