@@ -2,7 +2,7 @@ use clap::Parser;
 use eyre::anyhow;
 use pretty_assertions_sorted::assert_eq;
 use starknet::{
-    core::types::{BlockId, EventFilter, Felt},
+    core::types::{BlockId, EventFilter},
     providers::{
         Provider, Url,
         jsonrpc::{HttpTransport, JsonRpcClient},
@@ -15,151 +15,15 @@ use std::fs;
 use std::io::{BufRead, BufReader, Seek, SeekFrom, Write};
 use std::path::PathBuf;
 
-use starknet_event_query::util::{parse_event, start_logger};
-
-#[derive(Parser)]
-#[command(author, version, about, long_about = None)]
-pub struct Cli {
-    #[arg(
-        long,
-        value_name = "url",
-        long_help = "Server URL",
-        default_value = "http://127.0.0.1:9545"
-    )]
-    pub pathfinder_rpc_url: String,
-    #[arg(
-        long,
-        value_name = "fixtures",
-        long_help = "Path to fixture directory",
-        default_value = "ground"
-    )]
-    pub fixture_dir: PathBuf,
-}
-
-struct FilterSeed {
-    pub from_block: u64,
-    pub to_block: u64,
-    pub with_name: Option<String>,
-}
-
-impl FilterSeed {
-    pub fn from_stem(stem: &str) -> eyre::Result<Self> {
-        let ret = match stem.find('+') {
-            Some(pos) => {
-                let from_block = str::parse::<u64>(&stem[..pos])
-                    .map_err(|_| anyhow!("from block not a number"))?;
-                let (block_count, with_name) = Self::parse_tail(&stem[pos + 1..])?;
-                let to_block = from_block
-                    .checked_add(block_count)
-                    .ok_or_else(|| anyhow!("adding block count overflows"))?;
-                Self {
-                    from_block,
-                    to_block,
-                    with_name,
-                }
-            }
-            None => {
-                let (from_block, with_name) = Self::parse_tail(stem)?;
-                Self {
-                    from_block,
-                    to_block: from_block,
-                    with_name,
-                }
-            }
-        };
-        Ok(ret)
-    }
-
-    pub fn format_filter_basename(&self) -> Option<String> {
-        if let Some(with_name) = &self.with_name {
-            let head = if self.from_block == self.to_block {
-                self.from_block.to_string()
-            } else {
-                format!("{}+{}", self.from_block, self.to_block - self.from_block)
-            };
-
-            Some(format!("{}f{}.json", head, with_name))
-        } else {
-            None
-        }
-    }
-
-    fn parse_tail(tail: &str) -> eyre::Result<(u64, Option<String>)> {
-        let pair = match tail.find('w') {
-            Some(pos) => {
-                let n = str::parse::<u64>(&tail[..pos])
-                    .map_err(|_| anyhow!("stem tail doesn't start with a number"))?;
-                let s = tail[pos + 1..].to_string();
-                (n, Some(s))
-            }
-            None => {
-                let n = str::parse::<u64>(tail).map_err(|_| anyhow!("stem tail not a number"))?;
-                (n, None)
-            }
-        };
-        Ok(pair)
-    }
-}
+use starknet_event_query::{
+    config::Cli,
+    filter_seed::FilterSeed,
+    util::{parse_event, start_logger},
+};
 
 async fn check_fixture(provider: &impl Provider, fixture: PathBuf) -> eyre::Result<()> {
-    let os_stem = fixture
-        .file_stem()
-        .ok_or_else(|| anyhow!("invalid fixture path: {:?}", fixture))?;
-    let stem = os_stem
-        .to_str()
-        .ok_or_else(|| anyhow!("invalid fixture name: {:?}", fixture))?;
-    let filter_seed = FilterSeed::from_stem(stem)?;
-
-    let (raw_address, raw_keys) = if let Some(basename) = filter_seed.format_filter_basename() {
-        let fixture_dir = fixture
-            .parent()
-            .ok_or_else(|| anyhow!("fixture without path: {:?}", fixture))?;
-        let filter_path = fixture_dir.join(basename);
-        let contents = fs::read_to_string(filter_path)?;
-        let filter_map: HashMap<String, serde_json::Value> = serde_json::from_str(&contents)?;
-        let raw_address = if let Some(serde_json::Value::String(addr)) = filter_map.get("address") {
-            Some(addr.clone())
-        } else {
-            None
-        };
-        let raw_keys = if let Some(serde_json::Value::Array(keys)) = filter_map.get("keys") {
-            Some(keys.clone())
-        } else {
-            None
-        };
-        (raw_address, raw_keys)
-    } else {
-        (None, None)
-    };
-
-    let address = match raw_address {
-        Some(s) => Some(Felt::from_hex(&s)?),
-        None => None,
-    };
-
-    let keys = match raw_keys {
-        Some(outer) => {
-            let mut key_filter = Vec::new();
-            for inner in outer.into_iter() {
-                if let serde_json::Value::Array(arr) = inner {
-                    let mut alt = Vec::new();
-                    for v in arr {
-                        if let serde_json::Value::String(k) = v {
-                            alt.push(Felt::from_hex(&k)?);
-                        } else {
-                            return Err(anyhow!("unexpected key type"));
-                        }
-                    }
-
-                    key_filter.push(alt);
-                }
-            }
-
-            Some(key_filter)
-        }
-        None => None,
-    };
-
+    let filter_seed = FilterSeed::load(&fixture)?;
+    let (address, keys) = filter_seed.get_filter_address_and_keys(&fixture)?;
     let filter = EventFilter {
         from_block: Some(BlockId::Number(filter_seed.from_block)),
         to_block: Some(BlockId::Number(filter_seed.to_block)),
