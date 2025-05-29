@@ -8,12 +8,14 @@ pub fn start_logger(default_level: LevelFilter) {
         Ok(filter) => filter
             .add_directive("alloy=off".parse().unwrap())
             .add_directive("hyper=off".parse().unwrap())
-            .add_directive("reqwest=off".parse().unwrap()),
+            .add_directive("reqwest=off".parse().unwrap())
+            .add_directive("tungstenite=off".parse().unwrap()),
         _ => EnvFilter::default()
             .add_directive(default_level.into())
             .add_directive("alloy=off".parse().unwrap())
             .add_directive("hyper=off".parse().unwrap())
-            .add_directive("reqwest=off".parse().unwrap()),
+            .add_directive("reqwest=off".parse().unwrap())
+            .add_directive("tungstenite=off".parse().unwrap()),
     };
 
     let timer_format = time::format_description::parse(
