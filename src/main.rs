@@ -88,25 +88,37 @@ async fn check_ws_fixture(ws_url: &Url, fixture: PathBuf) -> eyre::Result<()> {
     options.from_address = address;
     options.keys = keys;
     let mut subscription = stream.subscribe_events(options).await.unwrap();
-    let mut destination = tempfile::tempfile()?;
     let mut actual_count = 0;
+    let source = fs::File::open(fixture)?;
+    let expected_reader = BufReader::new(source);
+    let mut expected_iter = expected_reader.lines();
+    let Some(expected_res) = expected_iter.next() else {
+        return Err(anyhow!("empty results not supported in subscribe mode"));
+    };
+    let mut expected_line = expected_res?;
     loop {
         match subscription.recv().await {
             Ok(EventsUpdate::Event(event)) => {
                 if let Some(block_number) = event.block_number {
                     if block_number > filter_seed.to_block {
-                        break;
+                        return Err(anyhow!("missing expected values"));
                     }
 
-                    let event_json = json!({
+                    let actual_json = json!({
                         "block_number": block_number,
                         "data": event.data,
                         "from_address": event.from_address,
                         "keys": event.keys,
                         "transaction_hash": event.transaction_hash,
                     });
-                    writeln!(&mut destination, "{}", event_json)?;
+                    let expected_json = parse_event(&expected_line)?;
+                    assert_eq!(actual_json, expected_json);
                     actual_count += 1;
+                    if let Some(expected_res) = expected_iter.next() {
+                        expected_line = expected_res?;
+                    } else {
+                        break;
+                    }
                 } else {
                     return Err(anyhow!("got event w/o block number"));
                 }
@@ -127,7 +139,7 @@ async fn check_ws_fixture(ws_url: &Url, fixture: PathBuf) -> eyre::Result<()> {
 
     subscription.unsubscribe().await?;
     tracing::debug!("retrieved {} events", actual_count);
-    check_received_data(fixture, destination)
+    Ok(())
 }
 
 async fn run_rpc(rpc_url: Url, mask_path_str: &str) -> eyre::Result<()> {
