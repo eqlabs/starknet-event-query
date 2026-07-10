@@ -5,6 +5,7 @@ use serde_json::json;
 use starknet_rust::{
     core::types::{
         AddressFilter, BlockId, ConfirmedBlockId, EventFilter, Felt, L2TransactionFinalityStatus,
+        TransactionFinalityStatus,
     },
     providers::{
         Provider, Url,
@@ -118,18 +119,24 @@ async fn check_rpc_fixture(
     check_received_data(fixture, destination)
 }
 
-async fn check_ws_fixture(ws_url: &Url, fixture: PathBuf) -> eyre::Result<()> {
+async fn check_ws_fixture(
+    ws_url: &Url,
+    provider: &impl Provider,
+    fixture: PathBuf,
+) -> eyre::Result<()> {
     let filter_seed = FilterSeed::load(&fixture)?;
     let (addresses, keys) = filter_seed.get_filter_addresses_and_keys(&fixture)?;
     let stream = TungsteniteStream::connect(ws_url, Duration::from_secs(5))
         .await
         .expect("WebSocket connection failed");
-    let mut options = EventSubscriptionOptions::new()
-        .with_block_id(ConfirmedBlockId::Number(filter_seed.from_block));
+    let latest_block = provider.block_number().await?;
+    let start_block = std::cmp::min(filter_seed.from_block, latest_block);
+    let mut options =
+        EventSubscriptionOptions::new().with_block_id(ConfirmedBlockId::Number(start_block));
     options.from_address = make_address_filter(addresses);
     options.keys = keys;
     // requires JSON-RPC API >= v09
-    options.finality_status = L2TransactionFinalityStatus::AcceptedOnL2;
+    options.finality_status = L2TransactionFinalityStatus::PreConfirmed;
     let mut subscription = stream.subscribe_events(options).await.unwrap();
     let mut actual_count = 0;
     let source = fs::File::open(fixture)?;
@@ -143,6 +150,10 @@ async fn check_ws_fixture(ws_url: &Url, fixture: PathBuf) -> eyre::Result<()> {
         match subscription.recv().await {
             Ok(EventsUpdate::Event(event)) => {
                 if let Some(block_number) = event.emitted_event.block_number {
+                    if block_number < filter_seed.from_block {
+                        continue;
+                    }
+
                     if block_number > filter_seed.to_block {
                         return Err(anyhow!("missing expected values"));
                     }
@@ -157,10 +168,18 @@ async fn check_ws_fixture(ws_url: &Url, fixture: PathBuf) -> eyre::Result<()> {
                     let expected_json = parse_event(&expected_line)?;
                     assert_eq!(actual_json, expected_json);
                     actual_count += 1;
-                    if let Some(expected_res) = expected_iter.next() {
-                        expected_line = expected_res?;
-                    } else {
-                        break;
+
+                    // PreConfirmed transactions should be repeated as
+                    // AcceptedOnL2 (and eventually also AcceptedOnL1,
+                    // but the current testing setup with local feeder
+                    // gateway doesn't do that): expect that event,
+                    // IOW do not update expected_line.
+                    if event.finality_status != TransactionFinalityStatus::PreConfirmed {
+                        if let Some(expected_res) = expected_iter.next() {
+                            expected_line = expected_res?;
+                        } else {
+                            break;
+                        }
                     }
                 } else {
                     return Err(anyhow!("got event w/o block number"));
@@ -195,9 +214,12 @@ async fn run_rpc(cli: Cli, mask_path_str: &str) -> eyre::Result<()> {
     Ok(())
 }
 
-async fn run_ws(ws_url: Url, mask_path_str: &str) -> eyre::Result<()> {
+async fn run_ws(cli: Cli, mask_path_str: &str) -> eyre::Result<()> {
+    let ws_url: Url = cli.pathfinder_ws_url.parse()?;
+    let rpc_url: Url = cli.pathfinder_rpc_url.parse()?;
+    let provider = JsonRpcClient::new(HttpTransport::new(rpc_url));
     for entry in glob::glob(mask_path_str)? {
-        check_ws_fixture(&ws_url, entry?).await?;
+        check_ws_fixture(&ws_url, &provider, entry?).await?;
     }
 
     Ok(())
@@ -215,7 +237,6 @@ async fn main() -> eyre::Result<()> {
     if !cli.subscribe {
         run_rpc(cli, path_str).await
     } else {
-        let ws_url: Url = cli.pathfinder_ws_url.parse()?;
-        run_ws(ws_url, path_str).await
+        run_ws(cli, path_str).await
     }
 }
