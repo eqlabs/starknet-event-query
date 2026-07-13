@@ -15,7 +15,7 @@ use starknet_rust::{
 use starknet_rust_tokio_tungstenite::{EventSubscriptionOptions, EventsUpdate, TungsteniteStream};
 use tracing_subscriber::filter::LevelFilter;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{BufRead, BufReader, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -146,6 +146,7 @@ async fn check_ws_fixture(
         return Err(anyhow!("empty results not supported in subscribe mode"));
     };
     let mut expected_line = expected_res?;
+    let mut seen_preconfirmed = HashSet::new();
     loop {
         match subscription.recv().await {
             Ok(EventsUpdate::Event(event)) => {
@@ -154,8 +155,12 @@ async fn check_ws_fixture(
                         continue;
                     }
 
-                    if block_number > filter_seed.to_block {
+                    if block_number > filter_seed.to_block + 2 {
                         return Err(anyhow!("missing expected values"));
+                    }
+
+                    if block_number > filter_seed.to_block {
+                        continue;
                     }
 
                     let actual_json = json!({
@@ -165,19 +170,19 @@ async fn check_ws_fixture(
                         "keys": event.emitted_event.keys,
                         "transaction_hash": event.emitted_event.transaction_hash,
                     });
-                    let expected_json = parse_event(&expected_line)?;
-                    assert_eq!(actual_json, expected_json);
-                    actual_count += 1;
 
-                    // PreConfirmed transactions should be repeated as
-                    // AcceptedOnL2 (and eventually also AcceptedOnL1,
-                    // but the current testing setup with local feeder
-                    // gateway doesn't do that): expect that event,
-                    // IOW do not update expected_line.
-                    if event.finality_status != TransactionFinalityStatus::PreConfirmed {
+                    actual_count += 1;
+                    if event.finality_status == TransactionFinalityStatus::PreConfirmed {
+                        let res = seen_preconfirmed.insert(actual_json);
+                        assert!(res);
+                    } else {
+                        seen_preconfirmed.remove(&actual_json);
+                        let expected_json = parse_event(&expected_line)?;
+                        assert_eq!(actual_json, expected_json);
                         if let Some(expected_res) = expected_iter.next() {
                             expected_line = expected_res?;
                         } else {
+                            assert!(seen_preconfirmed.is_empty());
                             break;
                         }
                     }
